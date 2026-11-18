@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+src-tauri/target/
+
+# generated at build time
+src-tauri/gen/
+
+# local artifacts
+.tmp/
+*.log
+app-tray-src.png
+
+# editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

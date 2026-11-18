@@ -1,0 +1,342 @@
+//! Codex Widget — Tauri shell.
+//!
+//! Responsibilities kept here (and deliberately *not* in the renderer):
+//!   • owning the polling thread that feeds `watcher`
+//!   • the tray menu, which is the only settings surface the app has
+//!   • window mechanics: transparent, always-on-top, sized to the capsule,
+//!     click-through while idle, parked bottom-right on first launch
+//!   • persisting the two toggles
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod watcher;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent,
+};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+
+use watcher::{Snapshot, Watcher};
+
+const POLL_MS: u64 = 500;
+
+/* ----------------------------------------------------------------- settings */
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Settings {
+    notify_on_complete: bool,
+    show_widget: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            notify_on_complete: true,
+            show_widget: true,
+        }
+    }
+}
+
+struct Shared {
+    snapshot: Mutex<Snapshot>,
+    settings: Mutex<Settings>,
+    settings_path: PathBuf,
+    /// true once the renderer has painted; the window stays hidden until then
+    /// so a transparent window never flashes white on launch
+    armed: Mutex<bool>,
+}
+
+impl Shared {
+    fn persist(&self) {
+        let settings = self.settings.lock().unwrap().clone();
+        if let Ok(text) = serde_json::to_string_pretty(&settings) {
+            let _ = std::fs::write(&self.settings_path, text);
+        }
+    }
+}
+
+fn load_settings(path: &PathBuf) -> Settings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/* ---------------------------------------------------------------- sessions */
+
+fn codex_home() -> Option<PathBuf> {
+    // CODEX_WIDGET_HOME points at a *`.codex` directory* and exists so the app
+    // can be demoed and tested against synthetic sessions.
+    if let Ok(custom) = std::env::var("CODEX_WIDGET_HOME") {
+        if !custom.is_empty() {
+            return Some(PathBuf::from(custom));
+        }
+    }
+    std::env::var("USERPROFILE")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".codex"))
+}
+
+/* ---------------------------------------------------------------- commands */
+
+#[tauri::command]
+fn snapshot(shared: State<'_, Arc<Shared>>) -> Snapshot {
+    shared.snapshot.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_settings(shared: State<'_, Arc<Shared>>) -> Settings {
+    shared.settings.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn set_visible(window: WebviewWindow, visible: bool) -> Result<(), String> {
+    // Idle means "invisible *and* not in the way": the window keeps running so
+    // nothing has to be re-shown (which would steal focus), but the cursor goes
+    // straight through it.
+    window
+        .set_ignore_cursor_events(!visible)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn resize_to(window: WebviewWindow, shared: State<'_, Arc<Shared>>, width: f64, height: f64) -> Result<(), String> {
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let size = PhysicalSize::new(
+        (width * scale).round().max(1.0) as u32,
+        (height * scale).round().max(1.0) as u32,
+    );
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let previous = window.outer_size().map_err(|e| e.to_string())?;
+
+    window.set_size(tauri::Size::Physical(size)).map_err(|e| e.to_string())?;
+
+    // Keep the right edge pinned: the widget lives in a corner and should grow
+    // leftwards, not drift off the screen edge.
+    let dx = previous.width as i32 - size.width as i32;
+    if dx != 0 {
+        window
+            .set_position(tauri::Position::Physical(PhysicalPosition::new(
+                position.x + dx,
+                position.y,
+            )))
+            .map_err(|e| e.to_string())?;
+    }
+
+    if !*shared.armed.lock().unwrap() {
+        park_bottom_right(&window)?;
+        window.show().map_err(|e| e.to_string())?;
+        *shared.armed.lock().unwrap() = true;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn ready(window: WebviewWindow, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    let mut armed = shared.armed.lock().unwrap();
+    if !*armed {
+        park_bottom_right(&window)?;
+        window.show().map_err(|e| e.to_string())?;
+        *armed = true;
+    }
+    Ok(())
+}
+
+fn park_bottom_right(window: &WebviewWindow) -> Result<(), String> {
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let monitor = match window.current_monitor() {
+        Ok(Some(monitor)) => monitor,
+        _ => return Ok(()),
+    };
+    let margin_x = (24.0 * scale) as i32;
+    // Windows 11 draws its toasts in that same corner, and a finished turn is
+    // exactly when one arrives. Park far enough up that the toast never covers
+    // the capsule.
+    let margin_y = (168.0 * scale) as i32;
+    let screen = monitor.size();
+    let origin = monitor.position();
+    let x = origin.x + screen.width as i32 - size.width as i32 - margin_x;
+    let y = origin.y + screen.height as i32 - size.height as i32 - margin_y;
+    window
+        .set_position(tauri::Position::Physical(PhysicalPosition::new(x, y)))
+        .map_err(|e| e.to_string())
+}
+
+/// Give the process an explicit AppUserModelID so Windows attributes toasts and
+/// taskbar grouping to this app instead of to whatever shell launched it.
+#[cfg(windows)]
+fn claim_app_identity() {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = std::ffi::OsStr::new("io.github.codexwidget")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
+    }
+}
+
+#[cfg(not(windows))]
+fn claim_app_identity() {}
+
+/* -------------------------------------------------------------------- tray */
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let settings = {
+        let shared = app.state::<Arc<Shared>>();
+        let current = shared.settings.lock().unwrap().clone();
+        current
+    };
+
+    let show = CheckMenuItem::with_id(app, "show", "显示控件", true, settings.show_widget, None::<&str>)?;
+    let notify = CheckMenuItem::with_id(
+        app,
+        "notify",
+        "完成时弹出 Windows 通知",
+        true,
+        settings.notify_on_complete,
+        None::<&str>,
+    )?;
+    let autostart = CheckMenuItem::with_id(
+        app,
+        "autostart",
+        "开机自启",
+        true,
+        app.autolaunch().is_enabled().unwrap_or(false),
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &notify,
+            &autostart,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .tooltip("Codex Widget")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => {
+                let shared = app.state::<Arc<Shared>>();
+                let mut settings = shared.settings.lock().unwrap();
+                settings.show_widget = !settings.show_widget;
+                let next = settings.clone();
+                drop(settings);
+                shared.persist();
+                let _ = app.emit("settings://changed", &next);
+            }
+            "notify" => {
+                let shared = app.state::<Arc<Shared>>();
+                let mut settings = shared.settings.lock().unwrap();
+                settings.notify_on_complete = !settings.notify_on_complete;
+                let next = settings.clone();
+                drop(settings);
+                shared.persist();
+                let _ = app.emit("settings://changed", &next);
+            }
+            "autostart" => {
+                let enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                let _ = if enabled {
+                    app.autolaunch().disable()
+                } else {
+                    app.autolaunch().enable()
+                };
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+/* -------------------------------------------------------------------- main */
+
+fn main() {
+    claim_app_identity();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let _ = std::fs::create_dir_all(&config_dir);
+            let settings_path = config_dir.join("settings.json");
+            let settings = load_settings(&settings_path);
+
+            let shared = Arc::new(Shared {
+                snapshot: Mutex::new(Snapshot::default()),
+                settings: Mutex::new(settings),
+                settings_path,
+                armed: Mutex::new(false),
+            });
+            app.manage(shared.clone());
+
+            // The polling thread owns the watcher; the UI thread only ever sees
+            // snapshots, which keeps the renderer dumb and the tray cheap.
+            if let Some(home) = codex_home() {
+                let sessions = home.join("sessions");
+                let app_handle = handle.clone();
+                let shared_feed = shared.clone();
+                std::thread::spawn(move || {
+                    let mut watcher = Watcher::new(sessions);
+                    loop {
+                        if watcher.scan() {
+                            let snapshot = watcher.snapshot();
+                            *shared_feed.snapshot.lock().unwrap() = snapshot.clone();
+                            let _ = app_handle.emit("codex://update", snapshot);
+                        }
+                        std::thread::sleep(Duration::from_millis(POLL_MS));
+                    }
+                });
+            }
+
+            build_tray(&handle)?;
+
+            // closing the widget must not kill the process — the tray lives on
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_ignore_cursor_events(true);
+                let window_for_close = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_for_close.hide();
+                    }
+                });
+            }
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            snapshot, get_settings, set_visible, resize_to, ready
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running codex-widget");
+}

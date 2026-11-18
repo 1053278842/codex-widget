@@ -1,0 +1,25 @@
+{
+  "name": "codex-widget",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A tiny always-on-top desktop widget that watches Codex CLI/VSCode task turns and tells you, at a glance, whether they are still running, how long they took, and when they finish.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-autostart": "^2.5.0",
+    "@tauri-apps/plugin-notification": "^2.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.7"
+  }
+}

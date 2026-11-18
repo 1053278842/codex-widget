@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex Widget</title>
+  </head>
+  <body class="hidden">
+    <!-- The whole UI is this one capsule. The window is resized to fit it. -->
+    <div id="pill" class="pill" data-state="idle" data-count="1">
+      <span class="ring" aria-hidden="true"></span>
+      <span class="dot" aria-hidden="true"></span>
+      <span class="word" aria-hidden="true"><span>完成</span></span>
+      <span class="time" id="time">00:00</span>
+      <span class="count" id="count">×1</span>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
