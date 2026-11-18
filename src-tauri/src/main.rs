@@ -76,6 +76,8 @@ struct Shared {
     settings: Mutex<Settings>,
     settings_path: PathBuf,
     last_overlay: Mutex<Option<OverlayPayload>>,
+    /// whether the two overlay windows are currently on screen
+    overlay_open: Mutex<bool>,
     /// true once the renderer has painted; the window stays hidden until then
     /// so a transparent window never flashes white on launch
     armed: Mutex<bool>,
@@ -95,6 +97,14 @@ fn load_settings(path: &PathBuf) -> Settings {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+/// Where `settings.json` lives, resolved without an `AppHandle` so the state can
+/// be registered on the Builder before any webview exists.
+fn app_config_dir() -> PathBuf {
+    std::env::var("APPDATA")
+        .map(|appdata| PathBuf::from(appdata).join("io.github.codexwidget"))
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /* ---------------------------------------------------------------- sessions */
@@ -179,6 +189,12 @@ fn ready(window: WebviewWindow, shared: State<'_, Arc<Shared>>) -> Result<(), St
 
 /// Rust owns the "is this worth a full-screen interruption?" decision so the
 /// threshold and the user's toggle live in exactly one place.
+/// Two windows, because they need opposite input behaviour:
+///   `overlay`       full-screen ambient layer, click-through, keeps pulsing
+///   `overlay-card`  small centred card, interactive — clicking it dismisses
+const OVERLAY_LABEL: &str = "overlay";
+const CARD_LABEL: &str = "overlay-card";
+
 #[tauri::command]
 fn maybe_flash_overlay(
     app: AppHandle,
@@ -192,29 +208,42 @@ fn maybe_flash_overlay(
         return Ok(false);
     }
 
-    let window = app
-        .get_webview_window("overlay")
+    let ambient = app
+        .get_webview_window(OVERLAY_LABEL)
         .ok_or_else(|| "overlay window is not configured".to_string())?;
+    let card = app
+        .get_webview_window(CARD_LABEL)
+        .ok_or_else(|| "overlay card window is not configured".to_string())?;
 
-    // Cover the primary monitor exactly; the window is click-through so the
-    // desktop underneath stays fully usable throughout.
-    let monitor = window
+    let monitor = ambient
         .primary_monitor()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "no primary monitor".to_string())?;
-    window
+
+    // ambient layer: exactly the monitor, fully click-through
+    ambient
         .set_size(tauri::Size::Physical(*monitor.size()))
         .map_err(|e| e.to_string())?;
-    window
+    ambient
         .set_position(tauri::Position::Physical(*monitor.position()))
         .map_err(|e| e.to_string())?;
-    window
+    ambient
         .set_always_on_top(true)
         .map_err(|e| e.to_string())?;
-    window
+    ambient
         .set_ignore_cursor_events(true)
         .map_err(|e| e.to_string())?;
-    window.show().map_err(|e| e.to_string())?;
+    ambient.show().map_err(|e| e.to_string())?;
+
+    // card: centred, interactive, and shown last so it sits above the layer
+    let card_size = card.outer_size().map_err(|e| e.to_string())?;
+    let x = monitor.position().x + (monitor.size().width as i32 - card_size.width as i32) / 2;
+    let y = monitor.position().y + (monitor.size().height as i32 - card_size.height as i32) / 2;
+    card
+        .set_position(tauri::Position::Physical(PhysicalPosition::new(x, y)))
+        .map_err(|e| e.to_string())?;
+    card.set_always_on_top(true).map_err(|e| e.to_string())?;
+    card.show().map_err(|e| e.to_string())?;
 
     let payload = OverlayPayload {
         kind,
@@ -222,23 +251,56 @@ fn maybe_flash_overlay(
         elapsed,
     };
     *shared.last_overlay.lock().unwrap() = Some(payload.clone());
-    app.emit_to("overlay", "overlay://play", payload)
+    *shared.overlay_open.lock().unwrap() = true;
+
+    app.emit_to(OVERLAY_LABEL, "overlay://play", payload.clone())
+        .map_err(|e| e.to_string())?;
+    app.emit_to(CARD_LABEL, "overlay://play", payload)
         .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
+/// The single way out: the card was clicked, or a new turn started.
 #[tauri::command]
-fn hide_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.hide().map_err(|e| e.to_string())?;
+fn dismiss_overlay(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    {
+        let mut open = shared.overlay_open.lock().unwrap();
+        if !*open {
+            return Ok(());
+        }
+        *open = false;
     }
+
+    // let both windows fade themselves out, then take them off screen
+    let _ = app.emit_to(OVERLAY_LABEL, "overlay://closing", ());
+    let _ = app.emit_to(CARD_LABEL, "overlay://closing", ());
+
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(260));
+        for label in [OVERLAY_LABEL, CARD_LABEL] {
+            if let Some(window) = handle.get_webview_window(label) {
+                let _ = window.hide();
+            }
+        }
+    });
     Ok(())
 }
 
-/// A freshly loaded overlay asks for the payload it may have missed.
+/// A freshly loaded webview asks for the payload it may have missed. Answers
+/// only while the overlay is open, so a dismissed overlay cannot come back.
 #[tauri::command]
 fn overlay_last(shared: State<'_, Arc<Shared>>) -> Option<OverlayPayload> {
+    if !*shared.overlay_open.lock().unwrap() {
+        return None;
+    }
     shared.last_overlay.lock().unwrap().clone()
+}
+
+/// Temporary: surfaces renderer exceptions in the dev console.
+#[tauri::command]
+fn js_log(message: String) {
+    eprintln!("[js] {message}");
 }
 
 fn park_bottom_right(window: &WebviewWindow) -> Result<(), String> {
@@ -385,28 +447,31 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 fn main() {
     claim_app_identity();
 
+    // State is registered on the Builder, not inside `setup`: the three webviews
+    // start their renderers immediately, and the main one can call `snapshot`
+    // before `setup` has run. Registering earlier removes that race entirely.
+    let config_dir = app_config_dir();
+    let _ = std::fs::create_dir_all(&config_dir);
+    let settings_path = config_dir.join("settings.json");
+    let settings = load_settings(&settings_path);
+    let shared = Arc::new(Shared {
+        snapshot: Mutex::new(Snapshot::default()),
+        settings: Mutex::new(settings),
+        settings_path,
+        last_overlay: Mutex::new(None),
+        overlay_open: Mutex::new(false),
+        armed: Mutex::new(false),
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        .setup(|app| {
+        .manage(shared.clone())
+        .setup(move |app| {
             let handle = app.handle().clone();
-
-            let config_dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let _ = std::fs::create_dir_all(&config_dir);
-            let settings_path = config_dir.join("settings.json");
-            let settings = load_settings(&settings_path);
-
-            let shared = Arc::new(Shared {
-                snapshot: Mutex::new(Snapshot::default()),
-                settings: Mutex::new(settings),
-                settings_path,
-                last_overlay: Mutex::new(None),
-                armed: Mutex::new(false),
-            });
-            app.manage(shared.clone());
 
             // The polling thread owns the watcher; the UI thread only ever sees
             // snapshots, which keeps the renderer dumb and the tray cheap.
@@ -419,6 +484,7 @@ fn main() {
                     loop {
                         if watcher.scan() {
                             let snapshot = watcher.snapshot();
+
                             *shared_feed.snapshot.lock().unwrap() = snapshot.clone();
                             let _ = app_handle.emit("codex://update", snapshot);
                         }
@@ -441,11 +507,16 @@ fn main() {
                 });
             }
 
-            // a full-screen overlay must never take focus or eat a click
-            if let Some(overlay) = app.get_webview_window("overlay") {
+            // the full-screen layer must never take focus or eat a click; the card must
+            // take clicks (that is how it is dismissed) but still not take focus
+            if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
                 let _ = overlay.set_ignore_cursor_events(true);
                 let _ = overlay.set_focusable(false);
                 let _ = overlay.set_skip_taskbar(true);
+            }
+            if let Some(card) = app.get_webview_window(CARD_LABEL) {
+                let _ = card.set_focusable(false);
+                let _ = card.set_skip_taskbar(true);
             }
 
             Ok(())
@@ -457,8 +528,9 @@ fn main() {
             resize_to,
             ready,
             maybe_flash_overlay,
-            hide_overlay,
-            overlay_last
+            dismiss_overlay,
+            overlay_last,
+            js_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running codex-widget");

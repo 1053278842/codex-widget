@@ -137,46 +137,10 @@ body {
   display: none;
 }
 
-/* ------------------------------------------- A′: the sideways expansion
-   `max-width` is the boring, deterministic way to animate an auto-width
-   element. The `0fr → 1fr` grid trick looks tidier but clips CJK glyphs on
-   some layouts, which is precisely the bug this widget cannot afford. */
-.word {
-  display: inline-block;
-  max-width: 0;
-  overflow: hidden;
-  opacity: 0;
-  transition:
-    max-width 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 0.16s ease;
-  margin-right: -8px; /* cancels the flex gap while collapsed */
-  vertical-align: middle;
-}
-
-.word > span {
-  display: inline-block;
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding-right: 3px;
-}
-
-.pill[data-state="done"] .word,
-.pill[data-state="aborted"] .word {
-  max-width: 52px;
-  opacity: 1;
-  margin-right: 0;
-  transition-delay: 0.06s, 0.1s;
-}
-
-.pill[data-state="done"] .word > span {
-  color: var(--green);
-}
-
-.pill[data-state="aborted"] .word > span {
-  color: var(--red);
-}
+/* ------------------------------------------- completion beat
+   The capsule deliberately says nothing: the dot changes colour, flashes once,
+   and the pill takes a green wash. Words made it feel like a readout you had to
+   parse; a colour plus one pulse is read in the corner of the eye. */
 
 /* ------------------------------------------------- finished appearance */
 .pill[data-state="done"] {
@@ -274,8 +238,5 @@ body.hidden .pill {
   }
   .pill.peak .ring {
     animation: none;
-  }
-  .word {
-    transition: none;
   }
 }

@@ -1,21 +1,17 @@
 /* ---------------------------------------------------------------------------
-   Full-screen completion overlay — shown only for turns that ran long enough
-   that you had already looked away.
+   Full-screen visual layer for a long turn that just finished.
 
-   Rules it has to obey:
-     • never steal focus  — the window is created unfocused and click-through
-     • never block input  — every layer is pointer-events: none
-     • readable in peripheral vision — the edge glow runs three times, so a
-       glance back still catches something, and the screen flash is short and
-       low-opacity rather than a jarring white bang
-     • gone in <6s without asking for anything
+   This window is pure atmosphere: a vignette that dims the edges of the desktop
+   and a green rim that pulses until the user acknowledges it. It is
+   click-through, so *nothing* here may be interactive — the dismissable card
+   lives in its own small window on top.
+
+   No auto-dismiss: the whole point is that it waits for you.
 --------------------------------------------------------------------------- */
 
 :root {
   --ok: #3ddc97;
   --bad: #f87171;
-  --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
-  --ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
 
 * {
@@ -38,33 +34,21 @@ body {
 .overlay {
   position: fixed;
   inset: 0;
-  display: grid;
-  place-items: center;
-  font-family: var(--ui);
 }
 
-/* ------------------------------------------------------ the glow layers
-   Order matters: the scrim darkens the whole desktop (the change your
-   peripheral vision notices first), the wash is a green bloom behind the card,
-   and the edge runs a slower triple pulse so a late glance back still catches
-   something. */
-
+/* Vignette: dark at the edges, nearly clear in the middle so the card window
+   above it is not tinted by this layer. */
 .scrim {
   position: absolute;
   inset: 0;
   opacity: 0;
-  background: radial-gradient(ellipse at 50% 45%, rgba(4, 6, 8, 0.34) 0%, rgba(3, 4, 6, 0.52) 100%);
-}
-
-.wash {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  background: radial-gradient(circle at 50% 46%, rgba(61, 220, 151, 0.26), rgba(61, 220, 151, 0) 62%);
-}
-
-.overlay[data-kind="aborted"] .wash {
-  background: radial-gradient(circle at 50% 46%, rgba(248, 113, 113, 0.26), rgba(248, 113, 113, 0) 62%);
+  transition: opacity 0.26s ease;
+  background: radial-gradient(
+    ellipse at 50% 48%,
+    rgba(3, 5, 7, 0.06) 0%,
+    rgba(3, 5, 7, 0.3) 55%,
+    rgba(2, 3, 5, 0.52) 100%
+  );
 }
 
 .edge {
@@ -82,201 +66,48 @@ body {
     inset 0 0 40px 0 rgba(248, 113, 113, 0.35);
 }
 
-/* ------------------------------------------------------------------ card */
-
-.card {
-  position: relative;
-  min-width: 400px;
-  padding: 30px 44px 28px;
-  border-radius: 22px;
-  border: 0.5px solid rgba(255, 255, 255, 0.12);
-  background: rgba(13, 15, 17, 0.94);
-  box-shadow:
-    0 24px 90px -20px rgba(0, 0, 0, 0.9),
-    0 0 0 0.5px rgba(0, 0, 0, 0.45),
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.11);
-  -webkit-backdrop-filter: blur(22px) saturate(1.25);
-  backdrop-filter: blur(22px) saturate(1.25);
-  text-align: center;
-  opacity: 0;
-}
-
-.eyebrow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.22em;
-  color: rgba(61, 220, 151, 0.95);
-  margin-bottom: 12px;
-}
-
-.overlay[data-kind="aborted"] .eyebrow {
-  color: rgba(248, 113, 113, 0.95);
-}
-
-.dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 12px 1px rgba(61, 220, 151, 0.6);
-}
-
-.overlay[data-kind="aborted"] .dot {
-  background: var(--bad);
-  box-shadow: 0 0 12px 1px rgba(248, 113, 113, 0.6);
-}
-
-.elapsed {
-  font-family: var(--mono);
-  font-size: 76px;
-  line-height: 1;
-  font-weight: 500;
-  letter-spacing: -0.025em;
-  font-variant-numeric: tabular-nums;
-  color: #f7f7f9;
-  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.4);
-}
-
-.task {
-  margin-top: 12px;
-  font-size: 12.5px;
-  letter-spacing: 0.01em;
-  color: rgba(237, 237, 239, 0.45);
-  max-width: 460px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ------------------------------------------------------------ timeline
-   0.00s  screen flashes (twice, short, low opacity)
-   0.10s  card rises in
-   0.20s  edge glow pulses ×3  ← the part your peripheral vision catches
-   4.90s  card fades
-   5.45s  everything gone, Rust hides the window
---------------------------------------------------------------------------- */
-
+/* ------------------------------------------------------------ the pulse
+   2.8s, two beats, repeats forever. Slow enough to read as "still waiting for
+   you" rather than as an alarm. */
 .overlay.run .scrim {
-  animation: scrim 5.45s ease-out 1 both;
-}
-
-.overlay.run .wash {
-  animation: flash 1.5s ease-out 1 both;
+  opacity: 1;
 }
 
 .overlay.run .edge {
-  animation: edge 4.3s ease-in-out 0.25s 1 both;
+  animation: pulse 2.8s ease-in-out infinite;
 }
 
-.overlay.run .card {
-  animation:
-    card-in 0.52s cubic-bezier(0.16, 0.84, 0.32, 1) 0.1s 1 both,
-    card-out 0.5s ease-in 4.9s 1 both;
+.overlay.closing .scrim {
+  opacity: 0;
 }
 
-@keyframes scrim {
+.overlay.closing .edge {
+  animation: none;
+  opacity: 0;
+  transition: opacity 0.26s ease;
+}
+
+@keyframes pulse {
   0% {
-    opacity: 0;
-  }
-  7% {
-    opacity: 1;
-  }
-  90% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes flash {
-  0% {
-    opacity: 0;
-  }
-  6% {
-    opacity: 0.9;
-  }
-  22% {
-    opacity: 0.12;
-  }
-  34% {
-    opacity: 0.62;
-  }
-  62% {
-    opacity: 0.05;
-  }
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes edge {
-  0% {
-    opacity: 0;
-  }
-  8% {
-    opacity: 1;
-  }
-  24% {
-    opacity: 0.24;
-  }
-  40% {
-    opacity: 0.86;
-  }
-  56% {
     opacity: 0.2;
   }
-  72% {
-    opacity: 0.74;
+  18% {
+    opacity: 1;
   }
-  90% {
-    opacity: 0.1;
+  54% {
+    opacity: 0.28;
+  }
+  78% {
+    opacity: 0.88;
   }
   100% {
-    opacity: 0;
-  }
-}
-
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.975);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes card-out {
-  from {
-    opacity: 1;
-    transform: none;
-  }
-  to {
-    opacity: 0;
-    transform: translateY(-6px) scale(0.995);
+    opacity: 0.2;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .overlay.run .scrim {
-    animation: scrim 5.45s ease-out 1 both;
-  }
-  .overlay.run .wash {
-    animation: none;
-  }
   .overlay.run .edge {
     animation: none;
-    opacity: 0.5;
-  }
-  .overlay.run .card {
-    animation:
-      card-in 0.2s linear 0.05s 1 both,
-      card-out 0.3s linear 4.9s 1 both;
+    opacity: 0.55;
   }
 }

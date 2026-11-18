@@ -59,7 +59,6 @@ const MAX_AGE_SECS = 86_400; // ignore turns older than a day
 const pill = document.getElementById('pill') as HTMLDivElement;
 const timeEl = document.getElementById('time') as HTMLSpanElement;
 const countEl = document.getElementById('count') as HTMLSpanElement;
-const wordEl = pill.querySelector('.word > span') as HTMLSpanElement;
 
 let mode: Mode = 'idle';
 /** epoch ms the currently shown running turn started */
@@ -144,6 +143,8 @@ function showRunning(earliestStartMs: number, count: number): void {
   if (mode !== 'run') {
     applyMode('run');
     timeEl.textContent = '00:00';
+    // a new turn means the previous reminder has been dealt with in practice
+    void invoke('dismiss_overlay');
   }
   runningSince = earliestStartMs;
   countEl.textContent = `×${count}`;
@@ -159,7 +160,6 @@ function showFinished(t: ThreadView, alsoFinished: number): void {
   frozenElapsed = Math.max(0, (endMs - startMs) / 1000);
   const finished = t.status === 'aborted' ? 'aborted' : 'done';
 
-  wordEl.textContent = finished === 'aborted' ? '中断' : '完成';
   timeEl.textContent = fmt(frozenElapsed);
   countEl.textContent = `×${alsoFinished}`;
   pill.dataset.count = String(alsoFinished);
@@ -295,4 +295,20 @@ async function boot(): Promise<void> {
   await syncSize();
 }
 
-void boot();
+void boot().catch((error) => {
+  void invoke('js_log', { message: `boot failed: ${String(error)}` });
+  // last resort: put the error on screen instead of staying silently invisible
+  document.body.classList.remove('hidden');
+  pill.dataset.state = 'aborted';
+  timeEl.textContent = 'ERR';
+});
+
+window.addEventListener('error', (event) => {
+  void invoke('js_log', {
+    message: `error: ${event.message} @ ${event.filename}:${event.lineno}`,
+  });
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  void invoke('js_log', { message: `rejection: ${String(event.reason)}` });
+});

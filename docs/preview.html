@@ -27,7 +27,7 @@
         font-size: 12.5px;
         line-height: 1.7;
         color: rgba(237, 237, 239, 0.42);
-        max-width: 640px;
+        max-width: 660px;
       }
       .row {
         display: flex;
@@ -55,23 +55,21 @@
   <body>
     <h1>Codex Widget</h1>
     <p class="sub">
-      运行中是一颗缓慢呼吸的琥珀色圆点 + 等宽计时；完成时胶囊横向展开成「完成 3:12」并亮一次绿色光环，
-      8 秒后收回并消失。空闲状态下整个控件不可见，且鼠标可穿透。
+      运行中是一颗缓慢呼吸的琥珀色圆点 + 等宽计时；完成时圆点转绿、亮一次光环、整颗胶囊转绿底，
+      <b>不出现任何文字</b>——颜色和那一下脉冲就是全部信息。8 秒后收回并消失。空闲状态下整个控件不可见，且鼠标可穿透。
     </p>
 
     <div class="row">
       <div class="pill" data-state="run" data-count="1">
         <span class="ring"></span><span class="dot"></span>
-        <span class="word"><span>完成</span></span>
         <span class="time">03:41</span><span class="count">×1</span>
       </div>
-      <span class="cap">运行中</span>
+      <span class="cap">运行中 · 呼吸</span>
     </div>
 
     <div class="row">
       <div class="pill" data-state="run" data-count="3">
         <span class="ring"></span><span class="dot"></span>
-        <span class="word"><span>完成</span></span>
         <span class="time">12:34</span><span class="count">×3</span>
       </div>
       <span class="cap">三个线程并发</span>
@@ -80,16 +78,14 @@
     <div class="row">
       <div class="pill" data-state="done" data-count="1">
         <span class="ring"></span><span class="dot"></span>
-        <span class="word"><span>完成</span></span>
         <span class="time">03:12</span><span class="count">×1</span>
       </div>
-      <span class="cap">刚完成</span>
+      <span class="cap">刚完成 · 绿点 + 一次光环</span>
     </div>
 
     <div class="row">
       <div class="pill" data-state="aborted" data-count="1">
         <span class="ring"></span><span class="dot"></span>
-        <span class="word"><span>中断</span></span>
         <span class="time">00:41</span><span class="count">×1</span>
       </div>
       <span class="cap">中断</span>
@@ -98,7 +94,6 @@
     <div class="row">
       <div class="pill stale-demo" data-state="run" data-count="1">
         <span class="ring"></span><span class="dot"></span>
-        <span class="word"><span>完成</span></span>
         <span class="time">28:07</span><span class="count">×1</span>
       </div>
       <span class="cap">15 分钟无事件 · 疑似卡住</span>
