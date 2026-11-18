@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The widget only needs its own commands plus the tray/drag/notification surface.",
-  "windows": ["main"],
+  "description": "The widget only needs its own commands plus the tray/drag/notification surface. The overlay window needs event + invoke access to play its sequence.",
+  "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

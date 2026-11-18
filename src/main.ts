@@ -49,6 +49,7 @@ interface Snapshot {
 interface Settings {
   notifyOnComplete: boolean;
   showWidget: boolean;
+  fullscreenOnLong: boolean;
 }
 
 const HOLD_MS = 8_000; // how long 「完成 3:12」 stays on screen
@@ -68,7 +69,11 @@ let frozenElapsed = 0;
 /** epoch ms we switched into the completion state */
 let doneAt = 0;
 let visible = false;
-let settings: Settings = { notifyOnComplete: true, showWidget: true };
+let settings: Settings = {
+  notifyOnComplete: true,
+  showWidget: true,
+  fullscreenOnLong: true,
+};
 let lastSentSize = '';
 
 const announced = new Set<string>();
@@ -170,6 +175,26 @@ function showFinished(t: ThreadView, alsoFinished: number): void {
   settleSize();
   void setVisible(settings.showWidget);
   void notifyFinished(t, alsoFinished);
+  void flashOverlayIfLong(t, finished, alsoFinished);
+}
+
+/**
+ * A capsule and a toast both assume you are looking at the screen. A turn that
+ * ran ≥10 minutes means you had long since looked away, so hand it to the
+ * full-screen overlay — Rust owns the threshold and the toggle.
+ */
+function flashOverlayIfLong(
+  t: ThreadView,
+  kind: 'done' | 'aborted',
+  alsoFinished: number,
+): void {
+  const extra = alsoFinished > 1 ? `　+${alsoFinished - 1}` : '';
+  const model = t.model ? ` · ${t.model}` : '';
+  void invoke<boolean>('maybe_flash_overlay', {
+    kind,
+    label: `${taskLabel(t)}${model}${extra}`,
+    elapsed: Math.round(frozenElapsed),
+  });
 }
 
 function setIdle(): void {

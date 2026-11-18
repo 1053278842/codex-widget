@@ -1,6 +1,6 @@
 [package]
 name = "codex-widget"
-version = "0.1.0"
+version = "0.2.0"
 description = "Always-on-top widget that watches Codex task turns"
 authors = ["you"]
 edition = "2021"

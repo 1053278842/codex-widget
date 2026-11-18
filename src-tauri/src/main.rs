@@ -28,6 +28,20 @@ use watcher::{Snapshot, Watcher};
 
 const POLL_MS: u64 = 500;
 
+/// A turn that ran at least this long means you had already looked away, so it
+/// earns the full-screen treatment instead of just the capsule.
+const LONG_RUN_SECS: u32 = 600;
+
+/// `CODEX_WIDGET_LONG_SECS=5` shortens the threshold so the overlay can be
+/// exercised without waiting ten minutes.
+fn long_run_secs() -> u32 {
+    std::env::var("CODEX_WIDGET_LONG_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(LONG_RUN_SECS)
+}
+
 /* ----------------------------------------------------------------- settings */
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,6 +49,8 @@ const POLL_MS: u64 = 500;
 struct Settings {
     notify_on_complete: bool,
     show_widget: bool,
+    /// full-screen overlay for turns that ran ≥ `LONG_RUN_SECS`
+    fullscreen_on_long: bool,
 }
 
 impl Default for Settings {
@@ -42,14 +58,24 @@ impl Default for Settings {
         Self {
             notify_on_complete: true,
             show_widget: true,
+            fullscreen_on_long: true,
         }
     }
+}
+
+/// What the overlay renders; replayed on request so a reload cannot miss it.
+#[derive(Clone, Serialize)]
+struct OverlayPayload {
+    kind: String,
+    label: String,
+    elapsed: u32,
 }
 
 struct Shared {
     snapshot: Mutex<Snapshot>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    last_overlay: Mutex<Option<OverlayPayload>>,
     /// true once the renderer has painted; the window stays hidden until then
     /// so a transparent window never flashes white on launch
     armed: Mutex<bool>,
@@ -151,6 +177,70 @@ fn ready(window: WebviewWindow, shared: State<'_, Arc<Shared>>) -> Result<(), St
     Ok(())
 }
 
+/// Rust owns the "is this worth a full-screen interruption?" decision so the
+/// threshold and the user's toggle live in exactly one place.
+#[tauri::command]
+fn maybe_flash_overlay(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    kind: String,
+    label: String,
+    elapsed: u32,
+) -> Result<bool, String> {
+    let enabled = shared.settings.lock().unwrap().fullscreen_on_long;
+    if !enabled || elapsed < long_run_secs() {
+        return Ok(false);
+    }
+
+    let window = app
+        .get_webview_window("overlay")
+        .ok_or_else(|| "overlay window is not configured".to_string())?;
+
+    // Cover the primary monitor exactly; the window is click-through so the
+    // desktop underneath stays fully usable throughout.
+    let monitor = window
+        .primary_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no primary monitor".to_string())?;
+    window
+        .set_size(tauri::Size::Physical(*monitor.size()))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(tauri::Position::Physical(*monitor.position()))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_always_on_top(true)
+        .map_err(|e| e.to_string())?;
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|e| e.to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+
+    let payload = OverlayPayload {
+        kind,
+        label,
+        elapsed,
+    };
+    *shared.last_overlay.lock().unwrap() = Some(payload.clone());
+    app.emit_to("overlay", "overlay://play", payload)
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn hide_overlay(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("overlay") {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// A freshly loaded overlay asks for the payload it may have missed.
+#[tauri::command]
+fn overlay_last(shared: State<'_, Arc<Shared>>) -> Option<OverlayPayload> {
+    shared.last_overlay.lock().unwrap().clone()
+}
+
 fn park_bottom_right(window: &WebviewWindow) -> Result<(), String> {
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
@@ -207,6 +297,14 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         settings.notify_on_complete,
         None::<&str>,
     )?;
+    let fullscreen = CheckMenuItem::with_id(
+        app,
+        "fullscreen",
+        "长任务完成时全屏提醒（≥10 分钟）",
+        true,
+        settings.fullscreen_on_long,
+        None::<&str>,
+    )?;
     let autostart = CheckMenuItem::with_id(
         app,
         "autostart",
@@ -221,6 +319,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         &[
             &show,
             &notify,
+            &fullscreen,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
             &quit,
@@ -251,6 +350,15 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let shared = app.state::<Arc<Shared>>();
                 let mut settings = shared.settings.lock().unwrap();
                 settings.notify_on_complete = !settings.notify_on_complete;
+                let next = settings.clone();
+                drop(settings);
+                shared.persist();
+                let _ = app.emit("settings://changed", &next);
+            }
+            "fullscreen" => {
+                let shared = app.state::<Arc<Shared>>();
+                let mut settings = shared.settings.lock().unwrap();
+                settings.fullscreen_on_long = !settings.fullscreen_on_long;
                 let next = settings.clone();
                 drop(settings);
                 shared.persist();
@@ -295,6 +403,7 @@ fn main() {
                 snapshot: Mutex::new(Snapshot::default()),
                 settings: Mutex::new(settings),
                 settings_path,
+                last_overlay: Mutex::new(None),
                 armed: Mutex::new(false),
             });
             app.manage(shared.clone());
@@ -332,10 +441,24 @@ fn main() {
                 });
             }
 
+            // a full-screen overlay must never take focus or eat a click
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.set_ignore_cursor_events(true);
+                let _ = overlay.set_focusable(false);
+                let _ = overlay.set_skip_taskbar(true);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            snapshot, get_settings, set_visible, resize_to, ready
+            snapshot,
+            get_settings,
+            set_visible,
+            resize_to,
+            ready,
+            maybe_flash_overlay,
+            hide_overlay,
+            overlay_last
         ])
         .run(tauri::generate_context!())
         .expect("error while running codex-widget");

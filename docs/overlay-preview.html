@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Codex Widget · overlay preview</title>
+    <link rel="stylesheet" href="../src/overlay.css" />
+    <style>
+      /* A deliberately abstract desktop: the subject of this image is the
+         overlay, not somebody's real editor. */
+      html,
+      body {
+        width: 1280px;
+        height: 720px;
+        background: #0e1013;
+      }
+      .desk {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(900px 500px at 80% -10%, #223038 0%, rgba(34, 48, 56, 0) 60%),
+          linear-gradient(160deg, #14171c 0%, #0b0d10 100%);
+      }
+      .win {
+        position: absolute;
+        border-radius: 10px;
+        box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.9);
+        overflow: hidden;
+      }
+      .win.editor {
+        left: 42px;
+        top: 38px;
+        width: 760px;
+        height: 600px;
+        background: #1b1d21;
+        border: 1px solid #26292e;
+      }
+      .win.doc {
+        left: 830px;
+        top: 96px;
+        width: 400px;
+        height: 470px;
+        background: #f2f0ec;
+      }
+      .bar {
+        height: 30px;
+        background: #23262b;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 12px;
+      }
+      .bar i {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #3a3e45;
+        display: block;
+      }
+      .rows {
+        padding: 18px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+      }
+      .rows span {
+        height: 8px;
+        border-radius: 4px;
+        background: #2a2e34;
+        display: block;
+      }
+      .rows span.k {
+        background: #3a4048;
+      }
+      .rows span.a {
+        background: #2f4a3e;
+      }
+      .doc .rows span {
+        background: #dcd8d0;
+      }
+      .doc .rows span.k {
+        background: #c9c3b8;
+      }
+      /* freeze the overlay timeline at a good frame so the screenshot is stable */
+      .freeze .overlay * {
+        animation-delay: -1.9s !important;
+        animation-play-state: paused !important;
+      }
+      /* the card has an out-animation too; freezing it at 1.9s would land past
+         its end and paint it invisible, so pin it to the "in" state */
+      .freeze .overlay .card {
+        animation: card-in 0.52s cubic-bezier(0.16, 0.84, 0.32, 1) 0s 1 both !important;
+        animation-delay: -0.8s !important;
+        animation-play-state: paused !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="desk"></div>
+
+    <div class="win editor">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="rows">
+        <span style="width: 46%" class="k"></span>
+        <span style="width: 72%"></span>
+        <span style="width: 61%" class="a"></span>
+        <span style="width: 80%"></span>
+        <span style="width: 33%" class="k"></span>
+        <span style="width: 68%"></span>
+        <span style="width: 55%" class="a"></span>
+        <span style="width: 74%"></span>
+        <span style="width: 41%"></span>
+        <span style="width: 63%" class="k"></span>
+        <span style="width: 76%"></span>
+        <span style="width: 28%" class="a"></span>
+        <span style="width: 58%"></span>
+        <span style="width: 70%"></span>
+        <span style="width: 36%"></span>
+      </div>
+    </div>
+
+    <div class="win doc">
+      <div class="bar" style="background: #e6e2da"><i style="background: #cdc7bc"></i><i style="background: #cdc7bc"></i></div>
+      <div class="rows">
+        <span style="width: 52%" class="k"></span>
+        <span style="width: 86%"></span>
+        <span style="width: 74%"></span>
+        <span style="width: 90%"></span>
+        <span style="width: 44%" class="k"></span>
+        <span style="width: 81%"></span>
+        <span style="width: 66%"></span>
+        <span style="width: 78%"></span>
+        <span style="width: 38%" class="k"></span>
+        <span style="width: 58%"></span>
+      </div>
+    </div>
+
+    <div class="freeze">
+      <div id="overlay" class="overlay run" data-kind="done">
+        <div class="scrim"></div>
+        <div class="wash"></div>
+        <div class="edge"></div>
+        <div class="card">
+          <div class="eyebrow">
+            <span class="dot"></span>
+            <span class="eyebrow-text">任务完成</span>
+          </div>
+          <div class="elapsed">47:12</div>
+          <div class="task">finedo-scaffold / service · deepseek-v4.1-flash</div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

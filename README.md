@@ -4,6 +4,12 @@
 
 它常驻在屏幕右下角、默认悬停于所有窗口之上，空闲时完全不可见。Codex 开始一轮任务时它浮出来，用一颗缓慢呼吸的琥珀色圆点 + 等宽计时器表示"还在干活"；任务结束时胶囊横向展开成 `完成 3:12`，亮一次绿色光环，同时弹出 Windows 通知，8 秒后自己收回、重新消失。
 
+**超过 10 分钟的任务结束时，还会多一层全屏提醒**——因为跑了十分钟的任务，你早就不看屏幕了，右下角的小胶囊和系统通知都指望你正看着它：
+
+![长任务完成时的全屏提醒](docs/overlay.png)
+
+整屏压暗 + 屏幕边缘绿色脉冲三下 + 中央一张写清耗时的大卡片，5.6 秒后自动退场。**鼠标穿透、不抢焦点**，你全程可以继续在下面打字。
+
 ![Codex Widget 的五种状态](docs/preview.png)
 
 ```
@@ -30,6 +36,7 @@ VSCode 里让 Codex 改一个跨文件的功能，然后你切去浏览器查资
 | 运行中 | 琥珀色圆点，2.4s 呼吸一次（缩放 + 光圈），等宽字体计时 | 直到任务结束 |
 | 完成 | 胶囊横向展开为 `完成 3:12`，绿色，一次性光环扩散；同时发 Windows 通知 | 8s，或点击立即收回 |
 | 中断 | 同上但为红色 `中断 0:41` | 8s，或点击立即收回 |
+| 长任务完成（≥10 分钟） | **整屏压暗 + 边缘绿光三次脉冲 + 中央大字卡片** | 5.6s，自动退场 |
 | 并发 | 在时间后追加 `×N`，时间取**最早开始**的那个线程（= 机器被占用多久） | 同运行中 |
 | 空闲 | **完全隐藏**，并且鼠标可穿透（不会挡住底下的窗口） | — |
 | 疑似卡住 | 15 分钟没有任何新事件 → 圆点停止呼吸、颜色变暗 | 同运行中 |
@@ -67,6 +74,7 @@ Codex 的 CLI / VSCode 扩展在 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 
 - **托盘右键**：
   - `显示控件` —— 关掉后任何任务都不再浮出（只保留托盘图标）
   - `完成时弹出 Windows 通知` —— 通知开关。关掉后只看颜色和动画
+  - `长任务完成时全屏提醒（≥10 分钟）` —— 全屏提醒开关
   - `开机自启` —— 写入当前用户的启动项
   - `退出`
 
@@ -94,16 +102,25 @@ node tools/fake-session.mjs --dir .tmp/codex --run-seconds 12
 CODEX_WIDGET_HOME=.tmp/codex npm run app:dev
 ```
 
-`--scenario abort` 演示中断态，`--scenario multi` 演示 `×N`。
+`--scenario abort` 演示中断态。
+
+想立刻看到全屏提醒又不想真等十分钟，把阈值调短：
+
+```bash
+CODEX_WIDGET_LONG_SECS=5 npm run app:dev
+```
 
 ### 项目结构
 
 ```
 src/                 渲染层（原生 TS，无框架）
   main.ts            状态机：idle / run / done / aborted + 8s 收尾
-  styles.css         全部视觉，含呼吸动画与 A′ 展开
+  styles.css         胶囊的全部视觉，含呼吸动画与 A′ 展开
+  overlay.ts         长任务的全屏提醒：播放 5.6s 序列后请求隐藏窗口
+  overlay.css        全屏层：压暗、边缘脉冲、中央卡片
+overlay.html         第二个 webview（全屏提醒），与胶囊共用同一份构建
 src-tauri/
-  src/main.rs        托盘、窗口机制、设置持久化、命令
+  src/main.rs        托盘、两个窗口的机制、设置持久化、命令
   src/watcher.rs     rollout jsonl 的增量跟随与 turn 状态机
 tools/
   fake-session.mjs   合成事件流，用于演示与测试
@@ -122,6 +139,8 @@ tools/
 **Codex Widget** is a ~100px always-on-top capsule for Windows that tells you whether a Codex task is still running, how long it has been running, and when it finishes — without switching windows.
 
 An amber dot breathes while a turn is in flight, a monospace timer ticks beside it, the capsule expands sideways into `完成 3:12` when the turn lands (with a one-shot green halo and an optional Windows toast), then collapses and disappears 8 seconds later. Idle means invisible *and* click-through.
+
+When a turn ran **10 minutes or longer** — long enough that you had stopped watching — a full-screen pass takes over instead: the desktop dims, the screen edge pulses green three times, and a large card states how long it took. It is click-through, never takes focus, and clears itself after 5.6s.
 
 It reads `~/.codex/sessions/**/rollout-*.jsonl` read-only, following the same `task_started` / `task_complete` / `turn_aborted` records the CLI writes — byte-offset incremental tailing, never file mtimes.
 
