@@ -1,7 +1,7 @@
 {
   "name": "codex-widget",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "A tiny always-on-top desktop widget that watches Codex CLI/VSCode task turns and tells you, at a glance, whether they are still running, how long they took, and when they finish.",
   "scripts": {

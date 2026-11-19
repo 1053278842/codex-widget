@@ -6,11 +6,20 @@
     <title>Codex Widget · overlay</title>
   </head>
   <body>
-    <!-- Full-screen visual layer. Click-through: it never takes a click away
-         from the desktop. It keeps pulsing until it is told to close. -->
+    <!-- One window, and it takes every input on purpose: since any click or key
+         dismisses it, there is nothing left that needs to stay click-through. -->
     <div id="overlay" class="overlay">
       <div class="scrim"></div>
       <div class="edge"></div>
+      <div class="card">
+        <div class="eyebrow">
+          <span class="dot"></span>
+          <span class="eyebrow-text" id="eyebrow">任务完成</span>
+        </div>
+        <div class="elapsed" id="elapsed">00:00</div>
+        <div class="task" id="task"></div>
+        <div class="hint">点击任意处、或按任意键关闭</div>
+      </div>
     </div>
     <script type="module" src="/src/overlay.ts"></script>
   </body>

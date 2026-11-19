@@ -4,7 +4,6 @@
     <meta charset="utf-8" />
     <title>Codex Widget · overlay preview</title>
     <link rel="stylesheet" href="../src/overlay.css" />
-    <link rel="stylesheet" href="../src/overlay-card.css" />
     <style>
       /* A deliberately abstract desktop: the subject of this image is the
          overlay, not somebody's real editor. */
@@ -87,20 +86,8 @@
         animation-delay: -0.5s !important;
         animation-play-state: paused !important;
       }
-      .freeze .scrim {
-        opacity: 1;
-      }
-      /* the card is its own window in the app; here it just sits on top */
-      .card-slot {
-        position: absolute;
-        inset: 0;
-        display: grid;
-        place-items: center;
-      }
-      .card-slot .card {
-        opacity: 1;
-        transform: none;
-      }
+      .freeze .scrim { opacity: 1; }
+      .freeze .card { opacity: 1; transform: none; }
     </style>
   </head>
   <body>
@@ -145,14 +132,9 @@
     </div>
 
     <div class="freeze">
-      <div class="overlay run" data-kind="done">
+      <div class="overlay show" data-kind="done">
         <div class="scrim"></div>
         <div class="edge"></div>
-      </div>
-    </div>
-
-    <div class="card-slot">
-      <div class="card-root show" data-kind="done">
         <div class="card">
           <div class="eyebrow">
             <span class="dot"></span>
@@ -160,7 +142,7 @@
           </div>
           <div class="elapsed">47:12</div>
           <div class="task">finedo-scaffold / service · deepseek-v4.1-flash</div>
-          <div class="hint">点击关闭</div>
+          <div class="hint">点击任意处、或按任意键关闭</div>
         </div>
       </div>
     </div>
