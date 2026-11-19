@@ -22,6 +22,8 @@ import {
   requestPermission,
   sendNotification,
 } from '@tauri-apps/plugin-notification';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { PhysicalPosition } from '@tauri-apps/api/dpi';
 
 type Status = 'running' | 'done' | 'aborted';
 type Mode = 'idle' | 'run' | 'done' | 'aborted';
@@ -133,10 +135,92 @@ function settleSize(): void {
 function applyMode(next: Mode): void {
   mode = next;
   pill.dataset.state = next;
-  // only a running capsule can be dragged; the finished one must keep its
-  // double-click, and a drag region would swallow it
-  if (next === 'run') pill.setAttribute('data-tauri-drag-region', '');
-  else pill.removeAttribute('data-tauri-drag-region');
+
+}
+
+/* ------------------------------------------------------------------- drag
+   Dragging is done here rather than with `data-tauri-drag-region`, because that
+   attribute makes the whole pill a window-caption: Windows turns the second
+   click of a double-click into WM_NCLBUTTONDBLCLK, which never reaches the
+   renderer — and the double-click is how you dismiss the capsule.
+
+   Pointer capture keeps the events coming even after the capsule slides out
+   from under the cursor, and `screenX/screenY` are absolute, so moving the
+   window does not feed back into the delta. */
+
+const appWindow = getCurrentWindow();
+const DOUBLE_CLICK_MS = 350;
+
+interface DragState {
+  id: number;
+  startX: number;
+  startY: number;
+  windowX: number;
+  windowY: number;
+  scale: number;
+  moved: boolean;
+}
+
+let drag: DragState | null = null;
+let lastPress = 0;
+
+pill.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+
+  const now = Date.now();
+  if (now - lastPress < DOUBLE_CLICK_MS) {
+    lastPress = 0;
+    drag = null;
+    hideCapsule();
+    return;
+  }
+  lastPress = now;
+
+  void Promise.all([appWindow.outerPosition(), appWindow.scaleFactor()]).then(
+    ([position, scale]) => {
+      drag = {
+        id: event.pointerId,
+        startX: event.screenX,
+        startY: event.screenY,
+        windowX: position.x,
+        windowY: position.y,
+        scale,
+        moved: false,
+      };
+      pill.setPointerCapture(event.pointerId);
+    },
+  );
+});
+
+pill.addEventListener('pointermove', (event) => {
+  if (drag === null || drag.id !== event.pointerId) return;
+  const dx = (event.screenX - drag.startX) * drag.scale;
+  const dy = (event.screenY - drag.startY) * drag.scale;
+  if (!drag.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+  drag.moved = true;
+  void appWindow.setPosition(
+    new PhysicalPosition(Math.round(drag.windowX + dx), Math.round(drag.windowY + dy)),
+  );
+});
+
+function endDrag(event: PointerEvent): void {
+  if (drag !== null && drag.id === event.pointerId) {
+    try {
+      pill.releasePointerCapture(event.pointerId);
+    } catch {
+      /* capture may already be gone */
+    }
+    drag = null;
+  }
+}
+
+pill.addEventListener('pointerup', endDrag);
+pill.addEventListener('pointercancel', endDrag);
+
+/** Hide, never quit: the tray keeps running and the next turn comes back. */
+function hideCapsule(): void {
+  suppressedKey = shownKey || null;
+  setIdle();
 }
 
 function showRunning(earliestStartMs: number, count: number): void {
@@ -288,13 +372,6 @@ async function boot(): Promise<void> {
   await listen<Settings>('settings://changed', (event) => {
     settings = event.payload;
     if (!settings.showWidget) setIdle();
-  });
-
-  // Double-click is the only dismissal: it hides the capsule, it does not quit.
-  pill.addEventListener('dblclick', (event) => {
-    event.preventDefault();
-    suppressedKey = shownKey || null;
-    setIdle();
   });
 
   window.setInterval(tick, 500);

@@ -69,9 +69,13 @@ body {
     box-shadow 0.3s ease;
 }
 
-/* running: draggable, quiet */
-.pill[data-state="run"] {
+/* draggable in every visible state — hold still and it is a click */
+.pill {
   cursor: grab;
+}
+
+.pill:active {
+  cursor: grabbing;
 }
 
 /* -------------------------------------------------------------- the dot */
