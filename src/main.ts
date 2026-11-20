@@ -57,6 +57,8 @@ interface Settings {
 
 const STALE_SECS = 900; // no event for this long ⇒ stop pretending it is alive
 const MAX_AGE_SECS = 86_400; // ignore turns older than a day
+/** how long a finished capsule stays on screen before it leaves on its own */
+const FINISHED_HOLD_MS = 5 * 60_000;
 
 const pill = document.getElementById('pill') as HTMLDivElement;
 const timeEl = document.getElementById('time') as HTMLSpanElement;
@@ -219,13 +221,45 @@ pill.addEventListener('pointercancel', endDrag);
 
 /** Hide, never quit: the tray keeps running and the next turn comes back. */
 function hideCapsule(): void {
+  cancelFinishedHold();
   suppressedKey = shownKey || null;
   setIdle();
+}
+
+/* ------------------------------------------------------- the finished hold
+   A completion is worth noticing, not worth parking on your desktop forever.
+   The capsule stays for five minutes, dimming very slowly the whole time, then
+   fades out on its own. Double-click still leaves immediately. */
+
+let holdTimer = 0;
+let leaveTimer = 0;
+
+function cancelFinishedHold(): void {
+  window.clearTimeout(holdTimer);
+  window.clearTimeout(leaveTimer);
+  holdTimer = 0;
+  leaveTimer = 0;
+  pill.classList.remove('leaving', 'settling');
+}
+
+function startFinishedHold(): void {
+  pill.style.setProperty('--hold', `${FINISHED_HOLD_MS}ms`);
+  pill.classList.add('settling');
+
+  holdTimer = window.setTimeout(() => {
+    pill.classList.add('leaving');
+    leaveTimer = window.setTimeout(() => {
+      pill.classList.remove('leaving', 'settling');
+      setIdle();
+    }, 520);
+  }, FINISHED_HOLD_MS);
 }
 
 function showRunning(earliestStartMs: number, count: number): void {
   const key = `run:${earliestStartMs}:${count}`;
   if (suppressedKey === key) return;
+
+  cancelFinishedHold();
 
   if (mode !== 'run') {
     applyMode('run');
@@ -245,6 +279,8 @@ function showRunning(earliestStartMs: number, count: number): void {
 function showFinished(t: ThreadView, alsoFinished: number): void {
   const key = `fin:${threadKey(t)}`;
   if (suppressedKey === key) return;
+
+  cancelFinishedHold();
 
   const startMs = t.started_at * 1000;
   const endMs = (t.completed_at ?? t.last_activity) * 1000;
@@ -267,9 +303,13 @@ function showFinished(t: ThreadView, alsoFinished: number): void {
   void setVisible(settings.showWidget);
   void notifyFinished(t, alsoFinished);
   void flashOverlayIfLong(t, finished, alsoFinished);
+
+  // it stays long enough to be noticed, then gets out of the way by itself
+  startFinishedHold();
 }
 
 function setIdle(): void {
+  cancelFinishedHold();
   applyMode('idle');
   pill.dataset.count = '1';
   countEl.textContent = '×1';

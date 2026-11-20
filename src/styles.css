@@ -221,6 +221,35 @@ body.hidden .pill {
   transform: scale(0.96);
 }
 
+/* the five-minute hold: the capsule dims almost imperceptibly the whole time,
+   then fades out, so it never just blinks away */
+.pill.settling {
+  animation: settle var(--hold, 300s) linear forwards;
+}
+
+.pill.leaving {
+  opacity: 0;
+  transform: scale(0.97);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+
+@keyframes settle {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.72;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill.settling {
+    animation: none;
+  }
+}
+
 /* A turn with no events for a while: still on screen, no longer pretending */
 .pill.stale .dot {
   animation: none;
