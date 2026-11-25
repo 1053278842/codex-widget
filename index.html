@@ -6,12 +6,24 @@
     <title>Codex Widget</title>
   </head>
   <body class="hidden">
-    <!-- The whole UI is this one capsule. The window is resized to fit it. -->
-    <div id="pill" class="pill" data-state="idle" data-count="1">
-      <span class="ring" aria-hidden="true"></span>
-      <span class="dot" aria-hidden="true"></span>
-      <span class="time" id="time">00:00</span>
-      <span class="count" id="count">×1</span>
+    <!-- Two rows, fixed order: DSH on top, Codex below. Each shows one turn
+         (the earliest running, or the newest finished) plus a ×N count.
+         The window is resized to this stack, so the hit area is exactly the
+         pixels you can see. -->
+    <div id="rows" class="rows">
+      <div id="row-dsh" class="pill" data-src="dsh" data-state="idle" data-count="1">
+        <span class="ring" aria-hidden="true"></span>
+        <span class="dot" aria-hidden="true"></span>
+        <span class="time">00:00</span>
+        <span class="count">×1</span>
+        <span class="sea" aria-hidden="true"></span>
+      </div>
+      <div id="row-codex" class="pill" data-src="codex" data-state="idle" data-count="1">
+        <span class="ring" aria-hidden="true"></span>
+        <span class="dot" aria-hidden="true"></span>
+        <span class="time">00:00</span>
+        <span class="count">×1</span>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

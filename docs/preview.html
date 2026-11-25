@@ -55,10 +55,37 @@
   <body>
     <h1>Codex Widget</h1>
     <p class="sub">
-      运行中是一颗缓慢呼吸的琥珀色圆点 + 等宽计时；完成时圆点转绿、亮一次光环、整颗胶囊转绿底，
-      <b>不出现任何文字</b>——颜色和那一下脉冲就是全部信息。8 秒后收回并消失。空闲状态下整个控件不可见，且鼠标可穿透。
+      两个来源、固定顺序：DSH 在上（底部一条蓝线），Codex 在下。运行中是一颗缓慢呼吸的琥珀色标记 + 等宽计时；
+      完成时它转绿、亮一次光环、整颗胶囊转绿底，<b>不出现任何文字</b>。5 分钟后自己淡出。
+      空闲状态下整个控件不可见，且鼠标可穿透。
     </p>
 
+    <div class="row">
+      <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end">
+        <div class="pill" data-state="run" data-count="1" data-src="dsh">
+          <span class="ring"></span><span class="dot"></span>
+          <span class="time">12:34</span><span class="count">×1</span>
+          <span class="sea"></span>
+        </div>
+        <div class="pill" data-state="run" data-count="2" data-src="codex">
+          <span class="ring"></span><span class="dot"></span>
+          <span class="time">03:12</span><span class="count">×2</span>
+        </div>
+        <span class="cap">两个来源同时（DSH 上 / Codex 下）</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end">
+        <div class="pill" data-state="done" data-count="1" data-src="dsh">
+          <span class="ring"></span><span class="dot"></span>
+          <span class="time">12:34</span><span class="count">×1</span>
+          <span class="sea"></span>
+        </div>
+        <div class="pill" data-state="run" data-count="1" data-src="codex">
+          <span class="ring"></span><span class="dot"></span>
+          <span class="time">03:12</span><span class="count">×1</span>
+        </div>
+        <span class="cap">DSH 完成、Codex 还在跑</span>
+      </div>
+    </div>
     <div class="row">
       <div class="pill" data-state="run" data-count="1">
         <span class="ring"></span><span class="dot"></span>

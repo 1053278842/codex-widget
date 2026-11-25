@@ -47,6 +47,15 @@ body {
 }
 
 /* ---------------------------------------------------------------- capsule */
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* the window is anchored to the right edge, so the rows are too: a narrower
+     row must not make the whole stack look like it moved */
+  align-items: flex-end;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -67,6 +76,11 @@ body {
     background 0.24s ease,
     border-color 0.24s ease,
     box-shadow 0.3s ease;
+}
+
+/* an idle row takes no room at all */
+.pill[data-state="idle"] {
+  display: none;
 }
 
 /* draggable in every visible state — hold still and it is a click */
@@ -271,5 +285,86 @@ body.hidden .pill {
   }
   .pill.peak .ring {
     animation: none;
+  }
+}
+
+/* ------------------------------------------------------------ DSH identity
+   Two cues, both cheap: a blue hairline along the bottom edge (the source)
+   and — when the user has dropped whale.png into the config dir — a whale
+   silhouette in place of the round dot (still tinted by state).
+
+   The whale is DeepSeek's own artwork and is deliberately NOT shipped in this
+   repository; without the file the capsule simply keeps its round dot. */
+
+.pill[data-src="dsh"] .sea {
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 2.5px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(76, 141, 255, 0.16) 0%,
+    rgba(76, 141, 255, 0.92) 18%,
+    rgba(76, 141, 255, 0.92) 82%,
+    rgba(76, 141, 255, 0.16) 100%
+  );
+  box-shadow: 0 0 6px -1px rgba(76, 141, 255, 0.55);
+}
+
+.pill[data-src="dsh"][data-state="done"] .sea,
+.pill[data-src="dsh"][data-state="aborted"] .sea {
+  background: linear-gradient(
+    90deg,
+    rgba(76, 141, 255, 0.08) 0%,
+    rgba(76, 141, 255, 0.55) 18%,
+    rgba(76, 141, 255, 0.55) 82%,
+    rgba(76, 141, 255, 0.08) 100%
+  );
+}
+
+/* whale as the status glyph */
+body.has-whale .pill[data-src="dsh"] .dot {
+  width: 17px;
+  height: 17px;
+  border-radius: 0;
+  background: var(--amber);
+  box-shadow: none;
+  transform: none;
+  -webkit-mask: var(--whale) center / contain no-repeat;
+  mask: var(--whale) center / contain no-repeat;
+  animation: bob 2.4s ease-in-out infinite;
+}
+
+body.has-whale .pill[data-src="dsh"][data-state="run"] .dot {
+  animation: bob 2.4s ease-in-out infinite;
+}
+
+body.has-whale .pill[data-src="dsh"][data-state="done"] .dot {
+  background: var(--green);
+  animation: none;
+}
+
+body.has-whale .pill[data-src="dsh"][data-state="aborted"] .dot {
+  background: var(--red);
+  animation: none;
+}
+
+body.has-whale .pill[data-src="dsh"] .dot.stale {
+  animation: none;
+  opacity: 0.5;
+}
+
+/* the whale floats instead of scaling: it reads as swimming, not breathing */
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0.7px);
+    opacity: 0.62;
+  }
+  50% {
+    transform: translateY(-0.6px);
+    opacity: 1;
   }
 }

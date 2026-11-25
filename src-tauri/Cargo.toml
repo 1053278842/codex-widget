@@ -1,6 +1,6 @@
 [package]
 name = "codex-widget"
-version = "0.5.0"
+version = "0.6.0"
 description = "Always-on-top widget that watches Codex task turns"
 authors = ["you"]
 edition = "2021"
@@ -15,6 +15,8 @@ tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# DSH session logs are stored as concatenated zstd frames
+zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 # only for SetCurrentProcessExplicitAppUserModelID: without it a toast from a

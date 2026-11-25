@@ -216,3 +216,14 @@ body {
     transform: none;
   }
 }
+/* DSH lands in blue: the source is visible from across the room, while the
+   green dot in the card keeps meaning "finished". */
+.overlay[data-source="dsh"] .edge {
+  box-shadow:
+    inset 0 0 210px 26px rgba(76, 141, 255, 0.48),
+    inset 0 0 40px 0 rgba(76, 141, 255, 0.32);
+}
+
+.overlay[data-source="dsh"] .card {
+  border-color: rgba(76, 141, 255, 0.42);
+}

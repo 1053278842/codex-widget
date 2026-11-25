@@ -9,6 +9,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dsh;
 mod watcher;
 
 use std::path::PathBuf;
@@ -70,6 +71,8 @@ impl Default for Settings {
 #[derive(Clone, Serialize)]
 struct OverlayPayload {
     kind: String,
+    /// "codex" | "dsh" — tints the rim and card so you know which one landed
+    source: String,
     label: String,
     elapsed: u32,
 }
@@ -88,6 +91,8 @@ struct Shared {
     /// true once the renderer has painted; the window stays hidden until then
     /// so a transparent window never flashes white on launch
     armed: Mutex<bool>,
+    /// base64 of the optional whale.png the user dropped into the config dir
+    whale: Option<String>,
 }
 
 impl Shared {
@@ -127,6 +132,17 @@ fn codex_home() -> Option<PathBuf> {
     std::env::var("USERPROFILE")
         .ok()
         .map(|home| PathBuf::from(home).join(".codex"))
+}
+
+fn dsh_home() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("CODEX_WIDGET_DSH_HOME") {
+        if !custom.is_empty() {
+            return Some(PathBuf::from(custom));
+        }
+    }
+    std::env::var("USERPROFILE")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".dsh"))
 }
 
 /* ---------------------------------------------------------------- commands */
@@ -247,6 +263,7 @@ fn maybe_flash_overlay(
     app: AppHandle,
     shared: State<'_, Arc<Shared>>,
     kind: String,
+    source: String,
     label: String,
     elapsed: u32,
 ) -> Result<bool, String> {
@@ -281,6 +298,7 @@ fn maybe_flash_overlay(
 
     let payload = OverlayPayload {
         kind,
+        source,
         label,
         elapsed,
     };
@@ -330,6 +348,53 @@ fn overlay_last(shared: State<'_, Arc<Shared>>) -> Option<OverlayPayload> {
 #[tauri::command]
 fn js_log(message: String) {
     eprintln!("[js] {message}");
+}
+
+/// The DSH whale glyph is not shipped: it is DeepSeek's own artwork, so the
+/// repository stays free of it. Drop a `whale.png` (ideally a 28-56px mask,
+/// greyscale+alpha) into the app config dir and the capsule picks it up.
+#[tauri::command]
+fn whale_asset(shared: State<'_, Arc<Shared>>) -> Option<String> {
+    shared
+        .whale
+        .clone()
+        .map(|data| format!("data:image/png;base64,{data}"))
+}
+
+fn load_whale(config_dir: &PathBuf) -> Option<String> {
+    let path = config_dir.join("whale.png");
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() || bytes.len() > 512 * 1024 {
+        return None;
+    }
+    Some(base64(&bytes))
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64(input: &[u8]) -> String {
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(BASE64[(n >> 18) as usize & 63] as char);
+        out.push(BASE64[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            BASE64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            BASE64[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 fn park_bottom_right(window: &WebviewWindow) -> Result<(), String> {
@@ -503,6 +568,7 @@ fn main() {
         last_position_save: Mutex::new(Instant::now()),
         restored: Mutex::new(false),
         armed: Mutex::new(false),
+        whale: load_whale(&app_config_dir()),
     });
 
     tauri::Builder::default()
@@ -517,16 +583,37 @@ fn main() {
 
             // The polling thread owns the watcher; the UI thread only ever sees
             // snapshots, which keeps the renderer dumb and the tray cheap.
-            if let Some(home) = codex_home() {
-                let sessions = home.join("sessions");
+            // One polling thread owns both providers: the renderer should never have to
+// know that Codex is read by tailing logs and DSH by reading projections.
+            {
                 let app_handle = handle.clone();
                 let shared_feed = shared.clone();
+                let codex_root = codex_home().map(|home| home.join("sessions"));
+                let dsh_root = dsh_home();
                 std::thread::spawn(move || {
-                    let mut watcher = Watcher::new(sessions);
+                    let mut codex = codex_root.map(Watcher::new);
+                    let mut dsh = dsh_root.map(dsh::DshWatcher::new);
                     loop {
-                        if watcher.scan() {
-                            let snapshot = watcher.snapshot();
+                        let codex_changed = codex.as_mut().map(|w| w.scan()).unwrap_or(false);
+                        let dsh_changed = dsh.as_mut().map(|w| w.scan()).unwrap_or(false);
 
+                        if codex_changed || dsh_changed {
+                            let mut threads = codex
+                                .as_ref()
+                                .map(|w| w.snapshot().threads)
+                                .unwrap_or_default();
+                            if let Some(watcher) = dsh.as_ref() {
+                                threads.extend(watcher.rows());
+                            }
+                            threads.sort_by_key(|t| t.started_at);
+
+                            let snapshot = Snapshot {
+                                threads,
+                                now: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0),
+                            };
                             *shared_feed.snapshot.lock().unwrap() = snapshot.clone();
                             let _ = app_handle.emit("codex://update", snapshot);
                         }
@@ -592,6 +679,7 @@ fn main() {
             maybe_flash_overlay,
             dismiss_overlay,
             overlay_last,
+            whale_asset,
             js_log
         ])
         .run(tauri::generate_context!())

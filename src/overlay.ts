@@ -12,6 +12,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 interface Payload {
   kind: 'done' | 'aborted';
+  source: 'dsh' | 'codex';
   label: string;
   elapsed: number;
 }
@@ -34,6 +35,7 @@ function fmt(totalSeconds: number): string {
 
 function play(payload: Payload): void {
   root.dataset.kind = payload.kind;
+  root.dataset.source = payload.source ?? 'codex';
   eyebrowEl.textContent = payload.kind === 'aborted' ? '任务中断' : '任务完成';
   elapsedEl.textContent = fmt(payload.elapsed);
   taskEl.textContent = payload.label;

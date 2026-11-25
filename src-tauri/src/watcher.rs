@@ -32,6 +32,8 @@ const DAY_DIRS: usize = 4;
 
 #[derive(Clone, Serialize)]
 pub struct ThreadView {
+    /// "codex" | "dsh" — which agent produced this turn
+    pub source: String,
     pub thread_id: String,
     pub cwd: String,
     pub title: String,
@@ -270,6 +272,7 @@ fn last_marker(path: &Path) -> Option<(String, Value)> {
 
 fn initial_view(path: &Path) -> Option<ThreadView> {
     let mut view = ThreadView {
+        source: "codex".to_string(),
         thread_id: path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -416,6 +419,7 @@ fn apply_event(state: &mut FileState, value: &Value) -> bool {
     let Some(view) = state.view.as_mut() else {
         // a file that had no usable head can still start producing turns
         state.view = Some(ThreadView {
+            source: "codex".to_string(),
             thread_id: "unknown".to_string(),
             cwd: String::new(),
             title: String::new(),

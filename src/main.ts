@@ -1,34 +1,35 @@
 /* ---------------------------------------------------------------------------
    Codex Widget — renderer.
 
-   Rust watches ~/.codex/sessions and pushes a snapshot roughly twice a second.
-   This file owns presentation only:
+   Rust pushes a snapshot of *all* turns from both agents (Codex via its jsonl
+   logs, DSH via its projection cache). This file renders them as two stacked
+   capsules, in a fixed order:
 
-     • running  — amber dot breathing + elapsed timer, aggregate ×N
-     • finished — green/red dot, one halo, and it STAYS there until you
-                  double-click it. No auto-dismiss: a completion you were not
-                  looking at is still a completion.
-     • idle     — invisible and click-through
+       DSH   on top   (blue hairline under it, whale glyph if you installed one)
+       Codex below
 
-   Long turns additionally hand over to the full-screen reminder (see overlay.ts),
-   which any click or key dismisses.
+   Each row owns its own state machine, its own ×N and its own five-minute
+   hold, so one finishing never disturbs the other. Only presentation lives
+   here — which turn is "running" is decided in Rust.
 --------------------------------------------------------------------------- */
 
 import './styles.css';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
 } from '@tauri-apps/plugin-notification';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { PhysicalPosition } from '@tauri-apps/api/dpi';
 
 type Status = 'running' | 'done' | 'aborted';
 type Mode = 'idle' | 'run' | 'done' | 'aborted';
+type Source = 'dsh' | 'codex';
 
 interface ThreadView {
+  source: Source;
   thread_id: string;
   cwd: string;
   title: string;
@@ -55,20 +56,17 @@ interface Settings {
   overlayThresholdSecs: number;
 }
 
-const STALE_SECS = 900; // no event for this long ⇒ stop pretending it is alive
-const MAX_AGE_SECS = 86_400; // ignore turns older than a day
+const STALE_SECS = 900;
+const MAX_AGE_SECS = 86_400;
 /** how long a finished capsule stays on screen before it leaves on its own */
 const FINISHED_HOLD_MS = 5 * 60_000;
+const DOUBLE_CLICK_MS = 350;
 
-const pill = document.getElementById('pill') as HTMLDivElement;
-const timeEl = document.getElementById('time') as HTMLSpanElement;
-const countEl = document.getElementById('count') as HTMLSpanElement;
+const SOURCES: Source[] = ['dsh', 'codex'];
+const SOURCE_LABEL: Record<Source, string> = { dsh: 'DSH', codex: 'Codex' };
 
-let mode: Mode = 'idle';
-/** epoch ms the currently shown running turn started */
-let runningSince = 0;
-/** elapsed seconds to freeze on the capsule when a turn ends */
-let frozenElapsed = 0;
+const rowsEl = document.getElementById('rows') as HTMLDivElement;
+
 let visible = false;
 let settings: Settings = {
   notifyOnComplete: true,
@@ -76,14 +74,8 @@ let settings: Settings = {
   overlayThresholdSecs: 600,
 };
 let lastSentSize = '';
-
 const announced = new Set<string>();
-const threadKey = (t: ThreadView) => `${t.thread_id}|${t.completed_at ?? 0}`;
-
-/** what the widget is showing right now — used to honour a manual hide */
-let shownKey = '';
-/** the state the user double-clicked away; it stays hidden until this changes */
-let suppressedKey: string | null = null;
+const threadKey = (t: ThreadView) => `${t.source}|${t.thread_id}|${t.completed_at ?? 0}`;
 
 /* ------------------------------------------------------------------ format */
 
@@ -101,14 +93,134 @@ function taskLabel(t: ThreadView): string {
   const fromCwd = t.cwd.split(/[\\/]/).filter(Boolean).pop();
   const fromTitle = t.title.trim();
   if (fromCwd && fromCwd.length <= 40) return fromCwd;
-  return fromTitle.length > 48 ? `${fromTitle.slice(0, 48)}…` : fromTitle || 'Codex';
+  return fromTitle.length > 48 ? `${fromTitle.slice(0, 48)}…` : fromTitle || SOURCE_LABEL[t.source];
 }
+
+/* -------------------------------------------------------------------- row */
+
+class Row {
+  readonly el: HTMLDivElement;
+  private readonly timeEl: HTMLSpanElement;
+  private readonly countEl: HTMLSpanElement;
+  mode: Mode = 'idle';
+  private runningSince = 0;
+  frozenElapsed = 0;
+  private shownKey = '';
+  private suppressedKey: string | null = null;
+  private holdTimer = 0;
+  private leaveTimer = 0;
+
+  constructor(el: HTMLDivElement) {
+    this.el = el;
+    this.timeEl = el.querySelector('.time') as HTMLSpanElement;
+    this.countEl = el.querySelector('.count') as HTMLSpanElement;
+  }
+
+  private cancelHold(): void {
+    window.clearTimeout(this.holdTimer);
+    window.clearTimeout(this.leaveTimer);
+    this.holdTimer = 0;
+    this.leaveTimer = 0;
+    this.el.classList.remove('leaving', 'settling');
+  }
+
+  setIdle(): void {
+    this.cancelHold();
+    this.setMode('idle');
+    this.el.dataset.count = '1';
+    this.countEl.textContent = '×1';
+    this.shownKey = '';
+  }
+
+  private setMode(next: Mode): void {
+    this.mode = next;
+    this.el.dataset.state = next;
+  }
+
+  showRunning(startMs: number, count: number): void {
+    const key = `run:${startMs}:${count}`;
+    if (this.suppressedKey === key) return;
+
+    this.cancelHold();
+    if (this.mode !== 'run') {
+      this.setMode('run');
+      this.timeEl.textContent = '00:00';
+      // a new turn means the previous reminder has been dealt with in practice
+      void invoke('dismiss_overlay');
+    }
+    this.shownKey = key;
+    this.runningSince = startMs;
+    this.countEl.textContent = `×${count}`;
+    this.el.dataset.count = String(count);
+    this.timeEl.textContent = fmt((Date.now() - startMs) / 1000);
+    settleSize();
+  }
+
+  showFinished(t: ThreadView, alsoFinished: number): void {
+    const key = `fin:${threadKey(t)}`;
+    if (this.suppressedKey === key) return;
+
+    this.cancelHold();
+    const startMs = t.started_at * 1000;
+    const endMs = (t.completed_at ?? t.last_activity) * 1000;
+    this.frozenElapsed = Math.max(0, (endMs - startMs) / 1000);
+
+    this.shownKey = key;
+    this.timeEl.textContent = fmt(this.frozenElapsed);
+    this.countEl.textContent = `×${alsoFinished}`;
+    this.el.dataset.count = String(alsoFinished);
+    this.setMode(t.status === 'aborted' ? 'aborted' : 'done');
+
+    this.el.classList.remove('peak');
+    void this.el.offsetWidth;
+    this.el.classList.add('peak');
+    window.setTimeout(() => this.el.classList.remove('peak'), 950);
+
+    settleSize();
+    void notifyFinished(t, this.frozenElapsed, alsoFinished);
+    void flashOverlayIfLong(t, this.frozenElapsed, alsoFinished);
+    this.startHold();
+  }
+
+  /** five minutes, dimming almost imperceptibly, then it fades out */
+  private startHold(): void {
+    this.el.style.setProperty('--hold', `${FINISHED_HOLD_MS}ms`);
+    this.el.classList.add('settling');
+    this.holdTimer = window.setTimeout(() => {
+      this.el.classList.add('leaving');
+      this.leaveTimer = window.setTimeout(() => {
+        this.el.classList.remove('leaving', 'settling');
+        this.setIdle();
+        syncVisibility();
+      }, 520);
+    }, FINISHED_HOLD_MS);
+  }
+
+  tick(): void {
+    if (this.mode === 'run') {
+      this.timeEl.textContent = fmt((Date.now() - this.runningSince) / 1000);
+    }
+  }
+
+  suppressCurrent(): void {
+    this.suppressedKey = this.shownKey || null;
+  }
+
+  isIdle(): boolean {
+    return this.mode === 'idle';
+  }
+}
+
+const rows: Record<Source, Row> = {
+  dsh: new Row(document.getElementById('row-dsh') as HTMLDivElement),
+  codex: new Row(document.getElementById('row-codex') as HTMLDivElement),
+};
 
 /* ------------------------------------------------------------------ window */
 
 async function syncSize(): Promise<void> {
-  const rect = pill.getBoundingClientRect();
-  const width = Math.ceil(rect.width) + 12; // body padding, keeps the shadow
+  const rect = rowsEl.getBoundingClientRect();
+  const width = Math.ceil(rect.width) + 12;
   const height = Math.ceil(rect.height) + 12;
   const key = `${width}x${height}`;
   if (key === lastSentSize) return;
@@ -116,44 +228,129 @@ async function syncSize(): Promise<void> {
   await invoke('resize_to', { width, height });
 }
 
-async function setVisible(next: boolean): Promise<void> {
-  if (visible === next) return;
-  visible = next;
-  // The window itself never hides: hiding and re-showing it would steal focus
-  // from whatever you are typing in. Idle = faded out + click-through instead.
-  document.body.classList.toggle('hidden', !next);
-  await invoke('set_visible', { visible: next });
-}
-
-/** width changes by a few pixels with ×N; re-measure rather than guess */
 function settleSize(): void {
   void syncSize();
   window.setTimeout(() => void syncSize(), 120);
   window.setTimeout(() => void syncSize(), 420);
 }
 
-/* ------------------------------------------------------------------- state */
-
-function applyMode(next: Mode): void {
-  mode = next;
-  pill.dataset.state = next;
-
+async function setVisible(next: boolean): Promise<void> {
+  if (visible === next) return;
+  visible = next;
+  document.body.classList.toggle('hidden', !next);
+  await invoke('set_visible', { visible: next });
 }
 
-/* ------------------------------------------------------------------- drag
-   Dragging is done here rather than with `data-tauri-drag-region`, because that
-   attribute makes the whole pill a window-caption: Windows turns the second
-   click of a double-click into WM_NCLBUTTONDBLCLK, which never reaches the
-   renderer — and the double-click is how you dismiss the capsule.
+/** the window is on screen while at least one row has something to say */
+function syncVisibility(): void {
+  const any = SOURCES.some((source) => !rows[source].isIdle());
+  settleSize();
+  void setVisible(any && settings.showWidget);
+}
 
-   Pointer capture keeps the events coming even after the capsule slides out
-   from under the cursor, and `screenX/screenY` are absolute, so moving the
-   window does not feed back into the delta. */
+/* -------------------------------------------------------------- toast hook */
+
+async function notifyFinished(
+  t: ThreadView,
+  elapsed: number,
+  alsoFinished: number,
+): Promise<void> {
+  if (!settings.notifyOnComplete) return;
+  if (!(await isPermissionGranted())) {
+    const permission = await requestPermission();
+    if (permission !== 'granted') return;
+  }
+  const verb = t.status === 'aborted' ? '中断' : '完成';
+  const extra = alsoFinished > 1 ? `（另有 ${alsoFinished - 1} 个）` : '';
+  sendNotification({
+    title: `${SOURCE_LABEL[t.source]} ${verb} · ${fmt(elapsed)}`,
+    body: `${taskLabel(t)}${extra}`,
+  });
+}
+
+/**
+ * A capsule and a toast both assume you are looking at the screen. A turn that
+ * ran past the configured threshold means you had long since looked away.
+ */
+function flashOverlayIfLong(
+  t: ThreadView,
+  elapsed: number,
+  alsoFinished: number,
+): void {
+  const extra = alsoFinished > 1 ? `　+${alsoFinished - 1}` : '';
+  const model = t.model ? ` · ${t.model}` : '';
+  void invoke<boolean>('maybe_flash_overlay', {
+    kind: t.status === 'aborted' ? 'aborted' : 'done',
+    source: t.source,
+    label: `${taskLabel(t)}${model}${extra}`,
+    elapsed: Math.round(elapsed),
+  });
+}
+
+/* ------------------------------------------------------------------ intake */
+
+function applySource(source: Source, threads: ThreadView[]): void {
+  const row = rows[source];
+  const nowSec = Date.now() / 1000;
+
+  const running = threads
+    .filter((t) => t.status === 'running' && nowSec - t.started_at < MAX_AGE_SECS)
+    .sort((a, b) => a.started_at - b.started_at);
+
+  if (running.length > 0) {
+    const earliest = running[0];
+    // a turn can look stalled: keep showing it, but stop the breathing
+    const stale = nowSec - earliest.last_activity > STALE_SECS;
+    row.el.classList.toggle('stale', stale);
+    row.showRunning(earliest.started_at * 1000, running.length);
+    return;
+  }
+  row.el.classList.remove('stale');
+
+  const finished = threads
+    .filter((t) => t.status !== 'running' && t.completed_at !== null)
+    .filter((t) => !announced.has(threadKey(t)))
+    .sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
+
+  if (finished.length > 0) {
+    for (const f of finished) announced.add(threadKey(f));
+    row.showFinished(finished[0], finished.length);
+    return;
+  }
+
+  // nothing new: leave the row as it is — a finished capsule keeps its five
+  // minutes; only a turn that vanished without a completion goes back to idle
+  if (row.mode === 'run') {
+    row.setIdle();
+    syncVisibility();
+  }
+}
+
+function absorb(snapshot: Snapshot): void {
+  const grouped: Record<Source, ThreadView[]> = { dsh: [], codex: [] };
+  for (const thread of snapshot.threads) {
+    if (thread.source === 'dsh' || thread.source === 'codex') {
+      grouped[thread.source].push(thread);
+    }
+  }
+  for (const source of SOURCES) applySource(source, grouped[source]);
+  syncVisibility();
+}
+
+/* ------------------------------------------------------------------- clock */
+
+function tick(): void {
+  for (const source of SOURCES) rows[source].tick();
+}
+
+/* -------------------------------------------------------------------- drag
+   Native `data-tauri-drag-region` would make the capsule a window caption and
+   swallow the second click of a double-click, so dragging is done here: pointer
+   capture, absolute screen coordinates, and a 4px threshold that leaves a still
+   press as a click. */
 
 const appWindow = getCurrentWindow();
-const DOUBLE_CLICK_MS = 350;
-
-interface DragState {
+let drag: {
   id: number;
   startX: number;
   startY: number;
@@ -161,19 +358,17 @@ interface DragState {
   windowY: number;
   scale: number;
   moved: boolean;
-}
-
-let drag: DragState | null = null;
+} | null = null;
 let lastPress = 0;
 
-pill.addEventListener('pointerdown', (event) => {
+rowsEl.addEventListener('pointerdown', (event) => {
   if (event.button !== 0) return;
 
   const now = Date.now();
   if (now - lastPress < DOUBLE_CLICK_MS) {
     lastPress = 0;
     drag = null;
-    hideCapsule();
+    hideAll();
     return;
   }
   lastPress = now;
@@ -189,12 +384,12 @@ pill.addEventListener('pointerdown', (event) => {
         scale,
         moved: false,
       };
-      pill.setPointerCapture(event.pointerId);
+      rowsEl.setPointerCapture(event.pointerId);
     },
   );
 });
 
-pill.addEventListener('pointermove', (event) => {
+rowsEl.addEventListener('pointermove', (event) => {
   if (drag === null || drag.id !== event.pointerId) return;
   const dx = (event.screenX - drag.startX) * drag.scale;
   const dy = (event.screenY - drag.startY) * drag.scale;
@@ -208,7 +403,7 @@ pill.addEventListener('pointermove', (event) => {
 function endDrag(event: PointerEvent): void {
   if (drag !== null && drag.id === event.pointerId) {
     try {
-      pill.releasePointerCapture(event.pointerId);
+      rowsEl.releasePointerCapture(event.pointerId);
     } catch {
       /* capture may already be gone */
     }
@@ -216,217 +411,53 @@ function endDrag(event: PointerEvent): void {
   }
 }
 
-pill.addEventListener('pointerup', endDrag);
-pill.addEventListener('pointercancel', endDrag);
+rowsEl.addEventListener('pointerup', endDrag);
+rowsEl.addEventListener('pointercancel', endDrag);
 
-/** Hide, never quit: the tray keeps running and the next turn comes back. */
-function hideCapsule(): void {
-  cancelFinishedHold();
-  suppressedKey = shownKey || null;
-  setIdle();
-}
-
-/* ------------------------------------------------------- the finished hold
-   A completion is worth noticing, not worth parking on your desktop forever.
-   The capsule stays for five minutes, dimming very slowly the whole time, then
-   fades out on its own. Double-click still leaves immediately. */
-
-let holdTimer = 0;
-let leaveTimer = 0;
-
-function cancelFinishedHold(): void {
-  window.clearTimeout(holdTimer);
-  window.clearTimeout(leaveTimer);
-  holdTimer = 0;
-  leaveTimer = 0;
-  pill.classList.remove('leaving', 'settling');
-}
-
-function startFinishedHold(): void {
-  pill.style.setProperty('--hold', `${FINISHED_HOLD_MS}ms`);
-  pill.classList.add('settling');
-
-  holdTimer = window.setTimeout(() => {
-    pill.classList.add('leaving');
-    leaveTimer = window.setTimeout(() => {
-      pill.classList.remove('leaving', 'settling');
-      setIdle();
-    }, 520);
-  }, FINISHED_HOLD_MS);
-}
-
-function showRunning(earliestStartMs: number, count: number): void {
-  const key = `run:${earliestStartMs}:${count}`;
-  if (suppressedKey === key) return;
-
-  cancelFinishedHold();
-
-  if (mode !== 'run') {
-    applyMode('run');
-    timeEl.textContent = '00:00';
-    // a new turn means the previous reminder has been dealt with in practice
-    void invoke('dismiss_overlay');
+/** Hide everything, never quit: the tray keeps running. */
+function hideAll(): void {
+  for (const source of SOURCES) {
+    rows[source].suppressCurrent();
+    rows[source].setIdle();
   }
-  shownKey = key;
-  runningSince = earliestStartMs;
-  countEl.textContent = `×${count}`;
-  pill.dataset.count = String(count);
-  timeEl.textContent = fmt((Date.now() - runningSince) / 1000);
-  settleSize();
-  void setVisible(settings.showWidget);
-}
-
-function showFinished(t: ThreadView, alsoFinished: number): void {
-  const key = `fin:${threadKey(t)}`;
-  if (suppressedKey === key) return;
-
-  cancelFinishedHold();
-
-  const startMs = t.started_at * 1000;
-  const endMs = (t.completed_at ?? t.last_activity) * 1000;
-  frozenElapsed = Math.max(0, (endMs - startMs) / 1000);
-  const finished = t.status === 'aborted' ? 'aborted' : 'done';
-
-  shownKey = key;
-  timeEl.textContent = fmt(frozenElapsed);
-  countEl.textContent = `×${alsoFinished}`;
-  pill.dataset.count = String(alsoFinished);
-  applyMode(finished);
-
-  // one-shot halo; replaying requires a reflow so the animation restarts
-  pill.classList.remove('peak');
-  void pill.offsetWidth;
-  pill.classList.add('peak');
-  window.setTimeout(() => pill.classList.remove('peak'), 950);
-
-  settleSize();
-  void setVisible(settings.showWidget);
-  void notifyFinished(t, alsoFinished);
-  void flashOverlayIfLong(t, finished, alsoFinished);
-
-  // it stays long enough to be noticed, then gets out of the way by itself
-  startFinishedHold();
-}
-
-function setIdle(): void {
-  cancelFinishedHold();
-  applyMode('idle');
-  pill.dataset.count = '1';
-  countEl.textContent = '×1';
-  shownKey = '';
-  void setVisible(false);
-}
-
-/* -------------------------------------------------------------- toast hook */
-
-async function notifyFinished(t: ThreadView, alsoFinished: number): Promise<void> {
-  if (!settings.notifyOnComplete) return;
-  if (!(await isPermissionGranted())) {
-    const permission = await requestPermission();
-    if (permission !== 'granted') return;
-  }
-  const verb = t.status === 'aborted' ? '中断' : '完成';
-  const extra = alsoFinished > 1 ? `（另有 ${alsoFinished - 1} 个）` : '';
-  sendNotification({
-    title: `Codex ${verb} · ${fmt(frozenElapsed)}`,
-    body: `${taskLabel(t)}${extra}`,
-  });
-}
-
-/**
- * A capsule and a toast both assume you are looking at the screen. A turn that
- * ran past the configured threshold means you had long since looked away, so
- * hand it to the full-screen reminder — Rust owns the threshold and the toggle.
- */
-function flashOverlayIfLong(
-  t: ThreadView,
-  kind: 'done' | 'aborted',
-  alsoFinished: number,
-): void {
-  const extra = alsoFinished > 1 ? `　+${alsoFinished - 1}` : '';
-  const model = t.model ? ` · ${t.model}` : '';
-  void invoke<boolean>('maybe_flash_overlay', {
-    kind,
-    label: `${taskLabel(t)}${model}${extra}`,
-    elapsed: Math.round(frozenElapsed),
-  });
-}
-
-/* ------------------------------------------------------------------ intake */
-
-function absorb(snapshot: Snapshot): void {
-  const nowSec = Date.now() / 1000;
-
-  const running = snapshot.threads
-    .filter((t) => t.status === 'running' && nowSec - t.started_at < MAX_AGE_SECS)
-    .sort((a, b) => a.started_at - b.started_at);
-
-  if (running.length > 0) {
-    const earliest = running[0];
-    // a turn can look stalled: keep showing it, but stop the breathing
-    const stale = nowSec - earliest.last_activity > STALE_SECS;
-    pill.classList.toggle('stale', stale);
-    showRunning(earliest.started_at * 1000, running.length);
-    return;
-  }
-  pill.classList.remove('stale');
-
-  // nothing running: surface the newest turn we have not announced yet
-  const finished = snapshot.threads
-    .filter((t) => t.status !== 'running' && t.completed_at !== null)
-    .filter((t) => !announced.has(threadKey(t)))
-    .sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
-
-  if (finished.length > 0) {
-    for (const f of finished) announced.add(threadKey(f));
-    showFinished(finished[0], finished.length);
-    return;
-  }
-
-  // Nothing new. A finished capsule stays on screen indefinitely; only a turn
-  // that vanished without a completion gets sent back to idle.
-  if (mode === 'run') setIdle();
-}
-
-/* ------------------------------------------------------------------- clock */
-
-function tick(): void {
-  if (mode === 'run') {
-    timeEl.textContent = fmt((Date.now() - runningSince) / 1000);
-  }
-  // finished states are frozen on purpose — no timer, no auto-hide
+  syncVisibility();
 }
 
 /* ------------------------------------------------------------------- boot */
 
 async function boot(): Promise<void> {
-  // adopt the current backlog without firing a toast for history
   const initial = await invoke<Snapshot>('snapshot');
   for (const t of initial.threads) {
     if (t.status !== 'running' && t.completed_at !== null) announced.add(threadKey(t));
   }
   settings = await invoke<Settings>('get_settings');
-  if (settings.showWidget) applyMode('idle');
+
+  // optional whale glyph: shipped separately because it is not ours to ship
+  const whale = await invoke<string | null>('whale_asset').catch(() => null);
+  if (whale) {
+    document.documentElement.style.setProperty('--whale', `url(${whale})`);
+    document.body.classList.add('has-whale');
+  }
 
   await listen<Snapshot>('codex://update', (event) => absorb(event.payload));
   await listen<Settings>('settings://changed', (event) => {
     settings = event.payload;
-    if (!settings.showWidget) setIdle();
+    syncVisibility();
   });
 
   window.setInterval(tick, 500);
 
-  // let Rust park and reveal the (still faded-out) window now that paint exists
   await invoke('ready');
   await syncSize();
+  absorb(initial);
 }
 
 void boot().catch((error) => {
   void invoke('js_log', { message: `boot failed: ${String(error)}` });
-  // last resort: put the error on screen instead of staying silently invisible
   document.body.classList.remove('hidden');
-  pill.dataset.state = 'aborted';
-  timeEl.textContent = 'ERR';
+  const first = document.getElementById('row-codex') as HTMLDivElement;
+  first.dataset.state = 'aborted';
+  (first.querySelector('.time') as HTMLElement).textContent = 'ERR';
 });
 
 window.addEventListener('error', (event) => {
