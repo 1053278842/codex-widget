@@ -109,6 +109,8 @@ class Row {
   private suppressedKey: string | null = null;
   private holdTimer = 0;
   private leaveTimer = 0;
+  /** wall-clock deadline for the finished hold — see `tick()` */
+  private hideAt = 0;
 
   constructor(el: HTMLDivElement) {
     this.el = el;
@@ -121,6 +123,7 @@ class Row {
     window.clearTimeout(this.leaveTimer);
     this.holdTimer = 0;
     this.leaveTimer = 0;
+    this.hideAt = 0;
     this.el.classList.remove('leaving', 'settling');
   }
 
@@ -182,24 +185,39 @@ class Row {
     this.startHold();
   }
 
-  /** five minutes, dimming almost imperceptibly, then it fades out */
+  /**
+   * Five minutes, dimming almost imperceptibly, then it fades out.
+   *
+   * The deadline is a timestamp checked by the 500ms heartbeat rather than one
+   * long `setTimeout`: Windows/Chromium throttle timers in occluded windows, and
+   * this window sits under the full-screen reminder exactly when a second turn
+   * finishes — which made a five-minute timer arrive minutes late (or never).
+   */
   private startHold(): void {
     this.el.style.setProperty('--hold', `${FINISHED_HOLD_MS}ms`);
     this.el.classList.add('settling');
-    this.holdTimer = window.setTimeout(() => {
-      this.el.classList.add('leaving');
-      this.leaveTimer = window.setTimeout(() => {
-        this.el.classList.remove('leaving', 'settling');
-        this.setIdle();
-        syncVisibility();
-      }, 520);
-    }, FINISHED_HOLD_MS);
+    // one mechanism only: the heartbeat compares against this deadline, so a
+    // throttled timer cannot postpone the exit
+    this.hideAt = Date.now() + FINISHED_HOLD_MS;
+  }
+
+  private expire(): void {
+    if (this.mode === 'idle' || this.hideAt === 0) return;
+    this.hideAt = 0;
+    this.el.classList.add('leaving');
+    this.leaveTimer = window.setTimeout(() => {
+      this.el.classList.remove('leaving', 'settling');
+      this.setIdle();
+      syncVisibility();
+    }, 520);
   }
 
   tick(): void {
     if (this.mode === 'run') {
       this.timeEl.textContent = fmt((Date.now() - this.runningSince) / 1000);
+      return;
     }
+    if (this.hideAt !== 0 && Date.now() >= this.hideAt) this.expire();
   }
 
   suppressCurrent(): void {

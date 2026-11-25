@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Codex Widget",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "identifier": "io.github.codexwidget",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,6 +14,7 @@
       {
         "label": "main",
         "title": "Codex Widget",
+
         "width": 96,
         "height": 42,
         "resizable": false,
